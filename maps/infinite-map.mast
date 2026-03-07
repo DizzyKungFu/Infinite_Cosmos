@@ -1,0 +1,655 @@
+@map/first_map "Infinite Cosmos"
+" A sandbox mission that allows you to explore an infinite map that will procedurally generate interesting new areas as you go farther.
+
+## Infinite_Cosmos by Jim Gillispie
+## THIS IS MISSION VERSION: 1.2.8
+##
+## UPDATE HISTORY
+## 1.2.8    initial release
+##          tested with 2 player ships (shuold also work for more)
+##
+## Future:  "Sargasso", i.e. a large nebula that slows warp?
+##          add NPC explorer ships? TSN light/fast with linked scanners
+##          add large asteroid fields/belts?
+##          rewards/points/ranks for exploring?
+##          mini-missions?
+
+metadata: ```
+Properties:
+  Main:
+    Player Ships: 'gui_int_slider("$text:int;low: 1.0;high:8.0;", var= "PLAYER_COUNT")'
+    Difficulty: 'gui_int_slider("$text:int;low: 1.0;high:11.0;", var= "DIFFICULTY")'
+  Map:
+    Terrain: 'gui_drop_down("$text: {TERRAIN_SELECT};list: none, few, some, lots, max",var="TERRAIN_SELECT")'
+    Lethal Terrain: 'gui_drop_down("$text: {LETHAL_SELECT};list: none, few, some, lots, max", var="LETHAL_SELECT")'
+    Friendly Ships: 'gui_drop_down("$text: {FRIENDLY_SELECT};list: none, few, some, lots, max", var="FRIENDLY_SELECT")'
+    Monsters: 'gui_drop_down("$text: {MONSTER_SELECT};list: none, few, some, lots, max", var="MONSTER_SELECT")'
+    Upgrades: 'gui_drop_down("$text: {UPGRADE_SELECT};list: none, few, some, lots, max", var= "UPGRADE_SELECT")'
+    Time Limit: 'gui_input("desc: Minutes;", var="GAME_TIME_LIMIT")'
+```
+
+
+    terrain_value = terrain_to_value(TERRAIN_SELECT)
+    lethal_value =  terrain_to_value(LETHAL_SELECT)
+    friendly_value = terrain_to_value(FRIENDLY_SELECT)
+    monster_value = terrain_to_value(MONSTER_SELECT)
+    upgrade_value = terrain_to_value(UPGRADE_SELECT)
+
+    print("DIFFICULTY: ", DIFFICULTY)
+    print("terrain: ", terrain_value)
+    print("lethal: ", lethal_value)
+    print("friendly: ", friendly_value)
+    print("monster: ", monster_value)
+    print("upgrade: ", upgrade_value)
+
+
+    #CREATE Sides and diplomacy
+    #
+    # These are the side used for LegendaryMissions
+    #
+    # Some examples of different ways to set up a new side.
+
+    #region Spawn TSN side
+    tsn = await prefab_spawn(prefab_side_generic, data={"key":"tsn"}) #Spawn using only the key
+    # Add a display name, description and color programatically
+    side_set_display_name(tsn, "TSN") 
+    side_set_description(tsn, "The Terran Stellar Navy")
+    side_set_icon_color(tsn, "#07F")
+    #endregion
+
+    #region Spawn Raider side
+    # Everything can be set in the prefab data.
+    raider = await prefab_spawn(prefab_side_generic, data={"key":"raider", "name": "Raider", "color": "#F00", "desc":"Hostile Aliens"})
+    #endregion
+
+    #region Spawn Civ side
+    # Some combination of prefab and functions can be nice.
+    civ = await prefab_spawn(prefab_side_generic, data={"key":"civ","name": "Civ"})
+    side_set_description(civ, "Civilians. Protect them from attack.")
+    side_set_icon_color(civ, "white") #NOTE that you can use color names in addition to hexidecimal
+    #endregion
+
+    # Now we set the relationships between the sides.
+    side_set_relations(tsn, raider, sbs.DIPLOMACY.HOSTILE)
+    side_set_relations(raider, civ, sbs.DIPLOMACY.HOSTILE)
+    side_set_relations(civ, tsn, sbs.DIPLOMACY.ALLIED)
+
+    #The colors for diplomatic relations can be set via script.
+    sim.set_diplomacy_color(sbs.DIPLOMACY.HOSTILE,"#F00")
+    sim.set_diplomacy_color(sbs.DIPLOMACY.ALLIED,"#0AA")
+
+
+    await task_schedule(spawn_players)
+
+
+    ## Mission variables
+    shared sectorNum = 1
+    shared explored = []
+
+
+    ## manually create Sector 001
+    terrain_asteroid_clusters(terrain_value, selectable=True)
+    terrain_spawn_nebula_clusters(terrain_value, selectable=False)
+    terrain_spawn_pickups(upgrade_value)
+    terrain_spawn_monsters(monster_value)
+    terrain_spawn_black_holes(lethal_value)
+    terrain_spawn_civ_stations(DIFFICULTY, 0)
+
+    name = f"SecCmd {sectorNum}"
+    start_sector = Vec3(0,0,0)
+    start_station = Vec3(-1000,0,4000)
+    station_object = npc_spawn(start_station.x, start_station.y, start_station.z, name, "tsn, station", "starbase_command", "behav_station")
+    so = to_space_object(station_object)
+    sc = to_id(station_object)
+    set_face(sc, random_terran(civilian=False))
+
+    # wrap a minefield around the Sector Command station ----------------------------
+    if lethal_value > 0:
+        startAngle = random.randrange(0,359)
+        angle = random.randrange(90,170)
+        angle = 170
+        endAngle = startAngle + angle
+
+        depth = 1   #random.randrange(2,3)
+        width = int(5 * lethal_value)
+        widthArray = [int(angle / 5.0)]
+        inner = random.randrange(1200,1500)
+        cluster_spawn_points = scatter_ring(width, depth, start_station.x,start_station.y,start_station.z, inner, inner, startAngle, endAngle)
+
+        # Random type, but same for cluster
+        for v2 in cluster_spawn_points:
+            #keep value between -500 and 500??
+            mine_obj = terrain_spawn( v2.x, v2.y + random.randrange(-300,300), v2.z,None, "#,mine", "danger_1a", "behav_mine")
+            mine_obj.blob.set("damage_done", 5)
+            mine_obj.blob.set("blast_radius", 1000)
+            mine_obj.engine_object.blink_state = -5
+
+    ## create defender ships
+    def_count = friendly_value + 1
+    for x while def_count>0:
+        # OK add this ship
+        spawn_pos = start_sector.rand_offset(24000, 36500, ring=True)
+        data = {"START_X": spawn_pos.x, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z}
+        prefab_spawn(prefab_npc_defender, data)
+        def_count -= 1
+
+    ## create Civ ships
+    civilian_count = friendly_value + 4
+    prefabs = [prefab_npc_civilian_cargo, prefab_npc_civilian_science, prefab_npc_civilian_luxury_liner, prefab_npc_civilian_transport]
+    for count in range(civilian_count):
+        prefab = random.choice(prefabs)
+        rand_x = start_sector.x + random.randrange(-90_000,90_000)
+        rand_y = start_sector.y + random.randrange(-1000,1000)
+        rand_z = start_sector.z + random.randrange(-90_000,90_000)
+        spawn_pos = Vec3(rand_x, rand_y, rand_z)
+        data = {"START_X": spawn_pos.x, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z}
+        prefab_spawn(prefab, data)
+
+    ## set up exploration tracking
+    starting_coords = [0,0,0]
+    explored.append(starting_coords)
+    print(f"explored = ", explored)
+
+
+/*     ## Asteroid testing
+    asteroid_types = ship_data_asteroid_keys()
+    a_type = random.choice(asteroid_types)
+    asteroid = terrain_spawn(0, 0, 2000,None, "#,asteroid", a_type, "behav_asteroid")
+    asteroid.blob.set("unselectable", 0)
+    ustatus = asteroid.blob.get("unselectable",0)
+    print("Unselectable = ", ustatus)
+    asteroid.engine_object.steer_yaw = random.uniform(0.0001, 0.003)
+    asteroid.engine_object.steer_pitch = -random.uniform(0.0001, 0.003)
+    asteroid.engine_object.steer_roll = random.uniform(0.0001, 0.003) */
+
+
+    ## Move player ship(s) to Sector 001 origin
+    player_list = role("__player__")
+    c = 1
+    for p in player_list:
+        eo = to_engine_object(p)
+        eo.pos.x = 0 + (c * 400)
+        eo.pos.y = 0
+        eo.pos.z = 0 - (c * 400)
+        c+=1
+
+
+    ## Link sensors to the TSN assets
+    for p in role("__player__"):
+        if p is not None:
+            player_ship_id = to_id(p)
+            link(player_ship_id, "extra_scan_source", role("tsn"))
+
+
+    ## Scheduled tasks
+    await task_schedule(docking_standard_player_station)
+    task_schedule(create_new_sector)
+    task_schedule(ending_triggered)
+
+
+    ## Start the game
+    //signal/game_started 
+    await delay_sim(1)
+    gui_reroute_server(start_screen)
+
+
+    ## Enforce black hole deaths
+    //damage/internal if has_role(DAMAGE_ORIGIN_ID, "__player__") and EVENT.sub_tag == "maelstrom"
+    explode_player_ship(DAMAGE_ORIGIN_ID)
+
+
+    ## This handles when a player ships is destroyed
+    ## The default is to truly delete it
+    //shared/signal/player_ship_destroyed
+    print("story: Exploded Deleting player_ship")
+    yield success if get_shared_inventory_value("GAME_ENDED", False)
+
+    so = to_object(DESTROYED_ID)
+    if so is not None:
+        <all>
+        % {so.name} has perished
+        % {so.name} has blown up
+        % lost contact with {so.name} 
+
+    so = to_object(DESTROYED_ID)
+    if so is not None:
+        sbs.delete_object(DESTROYED_ID)
+
+    await delay_sim(1)
+
+
+====== start_screen ======
+    sbs.suppress_client_connect_dialog(0)
+    gui_section("area:0,0,100,100")
+    gui_layout_widget("3dview")
+    gui_section("area:20,40,80,80")
+    gui_text_area("$t The Infinite Cosmos\n\nby: Jim Gillispie\n\nvoices: forthcoming...", "background:#0006")
+    await gui(timeout=delay_sim(7))
+
+    gui_reroute_server(show_main_game_screen)
+    sbs.suppress_client_connect_dialog(1)
+    ->END
+
+
+====== create_new_sector =======
+    await delay_sim(5)
+    
+    ## Run for all ships (in case of multiple player ships traveling in different directions)
+    for p in role("__player__"):
+        ## Get ship position
+        eo = to_engine_object(p)
+        print(f"For ship ", to_object(p).name)
+        p_posx = int(eo.pos.x)
+        p_posy = int(eo.pos.y)
+        p_posz = int(eo.pos.z)
+
+        ## Base case is that there are no nearby empty sectors
+        empty_nearby = [0,0,0]
+        
+        ## Start scanning for nearby empty sectors
+        print(f"Current explored sectors: ", explored)
+        print(f"Scanning for empty sectors...")
+
+        ## Scan Y down
+        p_modx = p_posx
+        p_mody = p_posy -50000
+        p_modz = p_posz
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of Y- is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of Y- is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Scan Y up
+        p_modx = p_posx
+        p_mody = p_posy +50000
+        p_modz = p_posz
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of Y+ is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of Y+ is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Scan X down
+        p_modx = p_posx -80000
+        p_mody = p_posy
+        p_modz = p_posz
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of X- is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of X- is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Scan X up
+        p_modx = p_posx +80000
+        p_mody = p_posy
+        p_modz = p_posz
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of X+ is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of X+ is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Scan Z down
+        p_modx = p_posx
+        p_mody = p_posy
+        p_modz = p_posz -80000
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of Z- is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of Z- is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Scan Z up
+        p_modx = p_posx
+        p_mody = p_posy
+        p_modz = p_posz +80000
+        p_roundx = round_to_nearest_200k(p_modx)
+        p_roundy = round_to_nearest_200k(p_mody)
+        p_roundz = round_to_nearest_200k(p_modz)
+        p_nearest = [p_roundx, p_roundy, p_roundz]
+        if p_nearest in explored:
+            print(f"Scan of Z+ is ", p_nearest, ", but already mapped.")
+        else:
+            print(f"Scan of Z+ is ", p_nearest, ", BRAND NEW!")
+            newsector_x = p_roundx
+            newsector_y = p_roundy
+            newsector_z = p_roundz
+            empty_nearby = p_nearest
+
+        ## Exit, or create a new sector
+        if empty_nearby in explored:
+            print(f"No new empty sectors.")
+        else:
+            print(f"creating new sector at ", empty_nearby)
+            explored.append(empty_nearby)
+            print(f"all explored sectors: ", explored)
+
+            ###########################
+            ## Create new sector!!!
+            ###########################
+            
+            newsector = Vec3(newsector_x, newsector_y, newsector_z)
+            sectorNum = sectorNum + random.randrange(2,15)
+
+            ## Include some variation
+            terrain_variation = random.randrange(-3,3)
+            new_terrain_value = terrain_value + terrain_variation
+            if new_terrain_value < 0:
+                new_terrain_value = 0
+            if new_terrain_value > 4:
+                new_terrain_value = 4
+            upgrade_variation = random.randrange(-3,3)
+            new_upgrade_value = upgrade_value + upgrade_variation
+            if new_upgrade_value < 0:
+                new_upgrade_value = 0
+            if new_upgrade_value > 4:
+                new_upgrade_value = 4
+            monster_variation = random.randrange(-3,3)
+            new_monster_value = monster_value + monster_variation
+            if new_monster_value < 0:
+                new_monster_value = 0
+            if new_monster_value > 4:
+                new_monster_value = 4
+            lethal_variation = random.randrange(-3,3)
+            new_lethal_value = lethal_value + lethal_variation
+            if new_lethal_value < 0:
+                new_lethal_value = 0
+            if new_lethal_value > 4:
+                new_lethal_value = 4
+            friendly_variation = random.randrange(-3,3)
+            new_friendly_value = friendly_value + friendly_variation
+            if new_friendly_value < 0:
+                new_friendly_value = 0
+            if new_friendly_value > 4:
+                new_friendly_value = 4
+
+            ## Generate the sector
+            terrain_spawn_nebula_clusters(new_terrain_value, center=newsector, selectable=False)
+            terrain_asteroid_clusters(new_terrain_value, center=newsector, selectable=True)
+            terrain_spawn_pickups(new_upgrade_value, center=newsector)
+            terrain_spawn_monsters(new_monster_value, center=newsector)
+            terrain_spawn_black_holes(new_lethal_value, center=newsector)
+            terrain_spawn_powercells(new_upgrade_value, center=newsector)
+
+            ## Settings for all possible aliens in this sector
+            enemyTypeNameList = ["Kralien", "Torgoth", "Arvonian", "Skaraan", "Ximni"]
+            species = random.choice(enemyTypeNameList)
+
+            ## POSSIBLITY: Create Sector Command station
+            possibility_chance = int(60)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                name = f"SecCmd {sectorNum}"
+                sc_x = newsector_x + random.randrange(-25000, 25000)
+                sc_y = newsector_y + random.randrange(-100, 100)
+                sc_z = newsector_z + random.randrange(-25000, 25000)
+                station_object = npc_spawn(sc_x,sc_y,sc_z, name, "tsn, station", "starbase_command", "behav_station")
+                so = to_space_object(station_object)
+                sc = to_id(station_object)
+                set_face(sc, random_terran(civilian=False))
+
+                # Setup docking and friendly eyes (has_science_scan is for gamemaster, admiral etc.)
+                for player_id in any_role("__player__,has_science_scan"):
+                    player = to_object(player_id)
+                    continue if player is None
+                    if has_role(player_id, "__player__"):
+                        docking_set_docking_logic(player_id, sc, docking_dock_with_friendly_station)
+                    link(player_id, "extra_scan_source", sc)
+
+                # wrap a minefield around the Sector Command station ----------------------------
+                if new_lethal_value > 0:
+                    startAngle = random.randrange(0,359)
+                    angle = random.randrange(90,170)
+                    angle = 170
+                    endAngle = startAngle + angle
+
+                    depth = 1   #random.randrange(2,3)
+                    width = int(5 * lethal_value)
+                    widthArray = [int(angle / 5.0)]
+                    inner = random.randrange(1200,1500)
+                    cluster_spawn_points = scatter_ring(width, depth, sc_x,sc_y,sc_z, inner, inner, startAngle, endAngle)
+                
+                    # Random type, but same for cluster
+                    for v2 in cluster_spawn_points:
+                        #keep value between -500 and 500??
+                        mine_obj = terrain_spawn( v2.x, v2.y + random.randrange(-300,300), v2.z,None, "#,mine", "danger_1a", "behav_mine")
+                        mine_obj.blob.set("damage_done", 5)
+                        mine_obj.blob.set("blast_radius", 1000)
+                        mine_obj.engine_object.blink_state = -5
+
+            ## POSSIBLITY: create defender ships
+            possibility_chance = int(50)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                def_count = new_friendly_value
+                #stations_friendly = to_object_list(role("tsn")  & role("station"))
+                for x while def_count>0:
+                    # OK add this ship
+                    rand_x = newsector.x + random.randrange(-55_000,55_000)
+                    rand_y = newsector.y + random.randrange(-1000,1000)
+                    rand_z = newsector.z + random.randrange(-55_000,55_000)
+                    spawn_pos = Vec3(rand_x, rand_y, rand_z)
+                    data = {"START_X": spawn_pos.x, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z}
+                    prefab_spawn(prefab_npc_defender, data)
+                    def_count -= 1
+
+                ## Link sensors to the TSN ships
+                for p in role("__player__"):
+                    if p is not None:
+                        player_ship_id = to_id(p)
+                        link(player_ship_id, "extra_scan_source", role("tsn"))
+
+            ## POSSIBLITY: create Civ stations
+            possibility_chance = int(35)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                num_civ_stations = random.randrange(1,5)
+                station_prefix = "DS"
+                stationTypeList = ["starbase_civil", "starbase_science", "starbase_industry", "starbase_science", "starbase_civil", "starbase_science"]
+                species = random.choice(enemyTypeNameList)
+
+                # for each station
+                for index in range(num_civ_stations):
+                    rand_x = newsector.x + random.randrange(-75_000,75_000)
+                    rand_y = newsector.y + random.randrange(-200,200)
+                    rand_z = newsector.z + random.randrange(-75_000,75_000)
+                    spawn_pos = Vec3(rand_x, rand_y, rand_z)
+
+                    #make the station ----------------------------------
+                    postfix = random.randrange(11,9999)
+                    name = "{station_prefix} {postfix}"
+                    station_type = random.choice(stationTypeList)
+
+                    ds_station_object = npc_spawn(spawn_pos.x,spawn_pos.y,spawn_pos.z, name, "civ, station", station_type, "behav_station")
+
+                    ds = to_id(ds_station_object)
+                    set_face(ds, random_terran(civilian=True))
+                    for p in role("__player__"):
+                        if p is not None:
+                            player_ship_id = to_id(p)
+                            docking_set_docking_logic(player_ship_id, ds, docking_dock_with_friendly_station)
+
+            ## POSSIBLITY: create Civ ships
+            possibility_chance = int(40)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                civilian_count = new_friendly_value
+                prefabs = [prefab_npc_civilian_cargo, prefab_npc_civilian_science, prefab_npc_civilian_luxury_liner, prefab_npc_civilian_transport]
+                for count in range(civilian_count):
+                    prefab = random.choice(prefabs)
+                    rand_x = newsector.x + random.randrange(-80_000,80_000)
+                    rand_y = newsector.y + random.randrange(-1500,1500)
+                    rand_z = newsector.z + random.randrange(-80_000,80_000)
+                    spawn_pos = Vec3(rand_x, rand_y, rand_z)
+                    data = {"START_X": spawn_pos.x, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z}
+                    prefab_spawn(prefab, data)
+
+            ## POSSIBLITY: create a planet
+            possibility_chance = int(30)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                rand_x = newsector.x + random.randrange(-90_000,90_000)
+                rand_y = newsector.y + random.randrange(-100,100)
+                rand_z = newsector.z + random.randrange(-90_000,90_000)
+                spawn_pos = Vec3(rand_x, rand_y, rand_z)
+                gg_num = random.randrange(11,98)
+                gg_pre_choices = ["Can", "Glo", "For", "Ar", "Mez"]
+                gg_pre = random.choice(gg_pre_choices)
+                gg_post_choices = ["as", "ion", "cinea", "tia", "nis"]
+                gg_post = random.choice(gg_post_choices)
+                gg_let_choice = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]
+                gg_let = random.choice(gg_let_choice)
+                gg_name = f"{gg_num} {gg_pre}{gg_post} {gg_let}"
+                gg_size = random.randrange(800,8000)
+                gas_planet = to_object(terrain_spawn(spawn_pos.x,spawn_pos.y-gg_size,spawn_pos.z, gg_name, "#,gasgiant", "planet", "behav_planet"))
+                gas_planet.name = gg_name
+                gas_planet.engine_object.exclusion_radius = gg_size
+                gas_planet_tick = sim.time_tick_counter
+                gas_planet.data_set.set("planet_last_changed",gas_planet_tick,1) # this flag tells the game to process the data below
+                gas_planet.data_set.set("planet_radius", gas_planet.engine_object.exclusion_radius/2.0, 0)
+                gas_planet.data_set.set("planet_baseColorR", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_baseColorG", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_baseColorB", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_emissiveColorR", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_emissiveColorG", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_emissiveColorB", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_upperCloudColorR", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_upperCloudColorG", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_upperCloudColorB", random.randrange(0,100)/100)
+                gas_planet.data_set.set("planet_fresnelBias", 0.17)
+                gas_planet.data_set.set("planet_fresnel", 32.04)
+                gas_planet.data_set.set("planet_bandScale", random.randrange(0,12))
+                gas_planet.data_set.set("planet_windSpeed1", random.randrange(-10000,10000))
+                gas_planet.data_set.set("planet_windSpeed2", random.randrange(-10000,10000))
+                gas_planet.data_set.set("planet_upperCloudStrength", random.randrange(0,12))
+                gas_planet.data_set.set("planet_upperCloudExponent", random.randrange(0,12))                
+
+            ## POSSIBLITY: create alien ships
+            possibility_chance = int(65)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                raider_count = DIFFICULTY
+                for count in range(raider_count):
+                    rand_x = newsector.x + random.randrange(-99_000,99_000)
+                    rand_y = newsector.y + random.randrange(-1500,1500)
+                    rand_z = newsector.z + random.randrange(-99_000,99_000)
+                    spawn_pos = Vec3(rand_x, rand_y, rand_z)
+                    prefab_spawn(prefab_fleet_raider, {"race": species, "fleet_difficulty": DIFFICULTY,"START_X": spawn_pos.x, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z})
+
+            ## POSSIBLITY: create alien stations
+            possibility_chance = int(30)
+            random_roll = random.randrange(1,100)
+            if random_roll <= possibility_chance:
+                if species != "Ximni":
+                    num_enemy_stations = random.randrange(1,3)
+
+                    if species == "Kralien":
+                        station_prefix = "KB"
+                        station_type = "starbase_kralien"
+                    if species == "Torgoth": 
+                        station_prefix = "TB"
+                        station_type = "starbase_torgoth"
+                    if species == "Arvonian":
+                        station_prefix = "AB"
+                        station_type = "starbase_arvonian"
+                    if species == "Skaraan":
+                        station_prefix = "SB"
+                        station_type = "starbase_skaraan"
+
+                    # for each station
+                    for index in range(num_enemy_stations):
+                        spawn_pos = newsector.rand_offset(95_000, 99_000, ring=True)
+
+                        #make the station ----------------------------------
+                        postfix = random.randrange(1,9999)
+                        name = "{station_prefix} {postfix}"
+
+                        if species == "Kralien":
+                            enemy_station_object = npc_spawn(spawn_pos.x,spawn_pos.y+random.randrange(-200,200),spawn_pos.z, name, "raider, kralien, enemy, station", station_type, "behav_station")
+                        if species == "Torgoth":
+                            enemy_station_object = npc_spawn(spawn_pos.x,spawn_pos.y+random.randrange(-200,200),spawn_pos.z, name, "raider, torgoth, enemy, station", station_type, "behav_station")
+                        if species == "Arvonian":
+                            enemy_station_object = npc_spawn(spawn_pos.x,spawn_pos.y+random.randrange(-200,200),spawn_pos.z, name, "raider, arvonian, enemy, station", station_type, "behav_station")
+                        if species == "Skaraan":
+                            enemy_station_object = npc_spawn(spawn_pos.x,spawn_pos.y+random.randrange(-200,200),spawn_pos.z, name, "raider, skaraan, enemy, station", station_type, "behav_station")
+
+                        if species == "Kralien":
+                            set_face(to_id(enemy_station_object), random_kralien())
+                        if species == "Torgoth":
+                            set_face(to_id(enemy_station_object), random_torgoth())
+                        if species == "Arvonian":
+                            set_face(to_id(enemy_station_object), random_arvonian())
+                        if species == "Skaraan":
+                            set_face(to_id(enemy_station_object), random_skaraan())
+
+                        print(f"{species} Station created: {int(spawn_pos.x)}, {int(spawn_pos.y)}, {int(spawn_pos.z)}")
+
+                        prefab_spawn(prefab_fleet_raider, {"race": species,"fleet_difficulty": DIFFICULTY, "START_X": spawn_pos.x + 75, "START_Y": spawn_pos.y, "START_Z": spawn_pos.z + 75})
+
+    print(f"END OF EVENT")
+    await delay_sim(5)
+    jump create_new_sector
+
+
+====== ending_triggered =======
+    await delay_sim(3)
+
+    ## Count the players left
+    playersships = role('__player__')
+
+    ## End if all the player ships are destroyed
+    if len(playersships)==0:
+        START_TEXT = "Mission Failure!  All the player ships have been destroyed!"
+        GAME_STARTED = False
+        GAME_ENDED = True
+        sbs.play_music_file(0, "music/default/failure")
+        signal_emit("show_game_results", None)
+        ->END
+
+    ## Time has run out
+    if is_timer_set(SHARED, "time_limit") and is_timer_finished(SHARED, "time_limit"):
+        START_TEXT = "Your time to explore has run out!"
+        GAME_STARTED = False
+        GAME_ENDED = True
+        sbs.play_music_file(0, "music/default/victory")
+        signal_emit("show_game_results", None)
+        ->END
+
+    await delay_sim(3)
+    jump ending_triggered
