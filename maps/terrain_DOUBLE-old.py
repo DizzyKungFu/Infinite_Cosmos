@@ -12,7 +12,7 @@ from sbs_utils.vec import Vec3
 from sbs_utils.procedural.prefab import prefab_spawn
 
 import math
-## Dizzy version = 1.2.7a
+## Dizzy version = 1.2.8
 NEB_MAX_SIZE = 1500
 NEB_SIZE_LARGE = 1500
 NEB_SIZE_SMALL = 1200
@@ -75,7 +75,7 @@ def terrain_random_point_box(all_points, left, top, front, right, bottom, back, 
         yield yld
 
 
-def terrain_spawn_stations(DIFFICULTY, lethal_value, x_min=-199_000, x_max=199_000, center=None, min_num=0, points=None):
+def terrain_spawn_stations(DIFFICULTY, lethal_value, x_min=-90_000, x_max=90_000, center=None, min_num=0, points=None):
     """
     Spawn stations throughout the map, weighted by the game difficutly, and wrap minefields around them as applicable based on the lethal terrain value.
     Args:
@@ -170,7 +170,7 @@ def terrain_spawn_stations(DIFFICULTY, lethal_value, x_min=-199_000, x_max=199_0
     return ret
 
 
-def terrain_spawn_civ_stations(DIFFICULTY, lethal_value, x_min=-199_000, x_max=199_000, center=None, min_num=0, points=None):
+def terrain_spawn_civ_stations(DIFFICULTY, lethal_value, x_min=-90_000, x_max=90_000, center=None, min_num=0, points=None):
     """
     Spawn stations throughout the map, weighted by the game difficutly, and wrap minefields around them as applicable based on the lethal terrain value.
     Args:
@@ -232,8 +232,7 @@ def terrain_spawn_civ_stations(DIFFICULTY, lethal_value, x_min=-199_000, x_max=1
         #    _spawned_pos.append(pos)
             startZ += station_step
         #make the station ----------------------------------
-        station_num = random.randrange(1,999)
-        name = f"DS {station_num}"
+        name = f"DS {index+1}"
         s_roles = f"civ, station"
         station_object = npc_spawn(*pos, name, s_roles, stat_type, "behav_station")
         so = to_space_object(station_object)
@@ -580,7 +579,7 @@ def terrain_spawn_nebula_clusters(terrain_value, center=None, selectable=False, 
                 color += ","+o_color
         m_obj.set_inventory_value("cluster_color", color)
         m_obj.set_inventory_value("cluster_counts", counts)
-        
+
     return spawn_points
 
 
@@ -593,6 +592,7 @@ def color_noise(r_min, r_max, g_min,g_max, b_min, b_max, a_min=0xff, a_max=0xff)
         return f"#{r:02x}{g:02x}{b:02x}{a:02x}"
 
     return f"#{r:02x}{g:02x}{b:02x}"
+
 
 _neb_colors = {
     "purple":{
@@ -870,7 +870,8 @@ def terrain_spawn_nebula_common(x,y,z, size_x=10000, size_z=None,
     # else:
     #     neb_size = NEB_SIZE_SMALL
 
-    gx = min(size_x, NEB_SIZE_LARGE); gy=height; gz=min(size_x, NEB_SIZE_LARGE)
+    gx = min(size_x, NEB_SIZE_LARGE); gy=height; gz=min(size_z, NEB_SIZE_LARGE)
+    count_x = size_x // gx;count_y = height // gy;count_z = size_z// gz
     neb_size = min(size_x, NEB_SIZE_LARGE)
 
     # if name is not None:
@@ -893,11 +894,10 @@ def terrain_spawn_nebula_common(x,y,z, size_x=10000, size_z=None,
         marker_obj.py_object.set_inventory_value("cluster_color", color)
         
 
-
     # Remember Radius is the diameter of the rect
     # Nebula need lots of drift to look good
     cluster_spawn_points = scatter.simple_noise(0, x,y, z, size_x, height, size_z,
-                                                 gx, gy,gz, radius=radius, centered=True, drift=7.0)
+                                                 count_x, count_y,count_z, radius=radius, centered=True, drift=5.0)
     
     ret = []
     for v2 in cluster_spawn_points:
@@ -970,7 +970,7 @@ def terrain_spawn_monsters(monster_value, center=None, points=None):
         except Exception:
             return
     else:
-        spawn_points = scatter.box(monster_value, center.x,center.y, center.z, 180_000, 1800, 180_000, centered=True)
+        spawn_points = scatter.box(monster_value, center.x,center.y, center.z, 180_000, 1000, 180_000, centered=True)
 
     for v in spawn_points:
         prefab_spawn("prefab_typhon_classic", None, *v.xyz)
